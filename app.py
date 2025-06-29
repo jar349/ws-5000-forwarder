@@ -49,7 +49,7 @@ except Exception as e:
     logger.error(f"Failed to connect to InfluxDB: {e}")
     raise
 
-@app.route("/measurements", methods=["POST"])
+@app.route("/measurements", methods=["GET"])
 def receive_data():
     logger.info(f"Received measurement data from {request.remote_addr}")
     
