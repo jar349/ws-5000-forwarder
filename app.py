@@ -55,7 +55,7 @@ def receive_data():
     
     try:
         data = request.args.to_dict()
-        logger.info(f"Measurement data: {data}")
+        logger.debug(f"Measurement data: {data}")
         
         if not data:
             logger.warning("Received empty measurement data")
@@ -77,7 +77,7 @@ def receive_data():
                 tag_count += 1
                 logger.debug(f"Added tag: {key}={value}")
 
-        logger.info(f"Created InfluxDB point with {field_count} fields and {tag_count} tags")
+        logger.debug(f"Created InfluxDB point with {field_count} fields and {tag_count} tags")
         
         try:
             write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
