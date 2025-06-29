@@ -5,17 +5,20 @@ from flask import Flask, request, jsonify
 from influxdb_client import InfluxDBClient, Point, WriteOptions
 import pytz
 
+
 # Configure logging
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-level = getattr(logging, LOG_LEVEL, logging.INFO)
 logging.basicConfig(
-    level=level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler()
     ]
 )
+
+# Configure only our app's logger to DEBUG level
 logger = logging.getLogger(__name__)
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+level = getattr(logging, LOG_LEVEL, logging.INFO)
+logger.setLevel(level)
 
 # Configure from environment variables
 INFLUX_URL = os.getenv("INFLUX_URL", "http://localhost:8086")
