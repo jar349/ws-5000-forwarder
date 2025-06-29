@@ -54,7 +54,7 @@ def receive_data():
     logger.info(f"Received measurement data from {request.remote_addr}")
     
     try:
-        data = request.form.to_dict()
+        data = request.args.to_dict()
         logger.info(f"Measurement data: {data}")
         
         if not data:
