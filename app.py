@@ -43,6 +43,7 @@ logger.info(f"Application started at {APP_START_TIME.isoformat()}")
 app = Flask(__name__)
 try:
     client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
+    query_api = client.query_api()
     write_api = client.write_api(write_options=WriteOptions(batch_size=1))
     logger.info("Successfully connected to InfluxDB")
 except Exception as e:
@@ -121,7 +122,6 @@ def health_check():
     try:
         logger.debug("Querying InfluxDB for latest measurement")
         # Query InfluxDB for the latest measurement
-        query_api = client.query_api()
         query = f'''
         from(bucket: "{INFLUX_BUCKET}")
         |> range(start: -30d)
