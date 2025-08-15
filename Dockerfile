@@ -32,9 +32,6 @@ FROM base AS production
 # Install only production dependencies
 RUN uv sync
 
-# And since this is for production, a proper wsgi server
-RUN pip install gunicorn
-
 # Create a non-root user
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
@@ -55,7 +52,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Run the application
-CMD ["gunicorn", "-c", "gunicorn.conf.py", "app:app"]
+CMD ["uv", "run", "gunicorn", "-c", "gunicorn.conf.py", "app:app"]
 
 # Testing stage
 FROM base AS testing
