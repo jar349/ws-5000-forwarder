@@ -1,30 +1,37 @@
-import os
+import io
 import logging
+import os
+import pytz
+import sys
+import threading
+import time
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 from influxdb_client import InfluxDBClient, Point, WriteOptions
-import pytz
 
 
 # Configure logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
-
-# Configure only our app's logger to DEBUG level
-logger = logging.getLogger(__name__)
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, write_through=True)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 level = getattr(logging, LOG_LEVEL, logging.INFO)
-logger.setLevel(level)
+
+logging.basicConfig(
+    level=level,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)],
+    force=True
+)
+
+logger = logging.getLogger(__name__)
 
 # Configure from environment variables
 INFLUX_URL = os.getenv("INFLUX_URL", "http://localhost:8086")
 INFLUX_TOKEN = os.getenv("INFLUX_TOKEN")
 INFLUX_ORG = os.getenv("INFLUX_ORG")
 INFLUX_BUCKET = os.getenv("INFLUX_BUCKET", "ws-5000")
+
+# control some influxdb tag usage
+ALLOWED_TAGS = {"stationtype", "mac"}
 
 # Validate required environment variables
 if not INFLUX_TOKEN:
@@ -42,9 +49,10 @@ logger.info(f"Application started at {APP_START_TIME.isoformat()}")
 
 app = Flask(__name__)
 try:
+    SYNCH = WriteOptions(batch_size=1, flush_interval=1_000, jitter_interval=0, retry_interval=5_000, write_type="synchronous")
     client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
     query_api = client.query_api()
-    write_api = client.write_api(write_options=WriteOptions(batch_size=1))
+    write_api = client.write_api(write_options=SYNCH)
     logger.info("Successfully connected to InfluxDB")
 except Exception as e:
     logger.error(f"Failed to connect to InfluxDB: {e}")
@@ -56,7 +64,8 @@ def receive_data():
     
     try:
         data = request.args.to_dict()
-        logger.debug(f"Measurement data: {data}")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Measurement data: {data}")
         
         if not data:
             logger.warning("Received empty measurement data")
@@ -74,20 +83,22 @@ def receive_data():
                 field_count += 1
                 logger.debug(f"Added field: {key}={float_value}")
             except ValueError:
-                point.tag(key, value)
-                tag_count += 1
-                logger.debug(f"Added tag: {key}={value}")
+                if key in ALLOWED_TAGS:
+                  point.tag(key, value)
+                  tag_count += 1
+                  logger.debug(f"Added tag: {key}={value}")
 
         logger.debug(f"Created InfluxDB point with {field_count} fields and {tag_count} tags")
         
         try:
             write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
-            write_api.flush()  # Force immediate write
             logger.info("Successfully wrote measurement to InfluxDB")
         except Exception as write_error:
             logger.error(f"Failed to write to InfluxDB: {write_error}", exc_info=True)
             raise
         
+        del data
+        del point
         return "OK"
     
     except Exception as e:
@@ -97,78 +108,21 @@ def receive_data():
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    logger.debug(f"Health check requested from {request.remote_addr}")
-    
-    # Get requested timezone from header, default to UTC
-    requested_tz_str = request.headers.get("X-REQUESTED-TZ", "UTC")
-    logger.debug(f"Requested timezone: {requested_tz_str}")
-    
     try:
-        # Parse the requested timezone
-        if requested_tz_str.upper() == "UTC":
-            requested_tz = timezone.utc
+        h = client.health()  # REST JSON call, no Flux CSV parsing
+        if getattr(h, "status", "").lower() == "pass":
+            return jsonify({"status": "ok"}), 200
         else:
-            requested_tz = pytz.timezone(requested_tz_str)
-        logger.debug(f"Successfully parsed timezone: {requested_tz}")
-    except Exception as tz_error:
-        logger.warning(f"Invalid timezone '{requested_tz_str}', falling back to UTC: {tz_error}")
-        # Fall back to UTC if timezone is invalid
-        requested_tz = timezone.utc
-    
-    # Format app start time in requested timezone
-    app_start_local = APP_START_TIME.astimezone(requested_tz)
-    started_on_rfc3339 = app_start_local.isoformat()
-    
-    try:
-        logger.debug("Querying InfluxDB for latest measurement")
-        # Query InfluxDB for the latest measurement
-        query = f'''
-        from(bucket: "{INFLUX_BUCKET}")
-        |> range(start: -30d)
-        |> filter(fn: (r) => r._measurement == "weather")
-        |> last()
-        '''
-        
-        result = query_api.query(query=query, org=INFLUX_ORG)
-        
-        last_measurement_rfc3339 = None
-        if result and len(result) > 0 and len(result[0].records) > 0:
-            # Get the timestamp from the latest record
-            latest_record = result[0].records[0]
-            timestamp = latest_record.get_time()
-            
-            # Convert to requested timezone
-            timestamp_local = timestamp.astimezone(requested_tz)
-            last_measurement_rfc3339 = timestamp_local.isoformat()
-            logger.debug(f"Found latest measurement at {last_measurement_rfc3339}")
-        else:
-            logger.warning("No recent measurements found in InfluxDB")
-        
-        response_data = {
-            "status": "healthy",
-            "influxdb_connected": True,
-            "last_measurement_rfc3339": last_measurement_rfc3339,
-            "started_on_rfc3339": started_on_rfc3339,
-            "timezone": str(requested_tz)
-        }
-        
-        logger.debug(f"Health check successful, returning status: {response_data['status']}")
-        return jsonify(response_data)
-        
+            return jsonify({
+                "status": "unhealthy",
+                "influxdb_status": getattr(h, "status", None),
+                "message": getattr(h, "message", None)
+            }), 503
     except Exception as e:
-        logger.error(f"Health check failed due to InfluxDB error: {e}", exc_info=True)
-        
-        response_data = {
-            "status": "unhealthy",
-            "influxdb_connected": False,
-            "error": str(e),
-            "last_measurement_rfc3339": None,
-            "started_on_rfc3339": started_on_rfc3339,
-            "timezone": str(requested_tz)
-        }
-        
-        logger.warning(f"Health check returning unhealthy status due to: {e}")
-        return jsonify(response_data), 500
+        return jsonify({
+            "status": "unreachable",
+            "error": str(e)
+        }), 503
 
 if __name__ == "__main__":
     logger.info("Starting Flask development server on 0.0.0.0:8000")
